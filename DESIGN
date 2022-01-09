@@ -1,0 +1,74 @@
+Algorithm and protocol used to implement the two-phase commit (2PC):
+    For the 2PC, each router stores a bunch of local variables which are following"
+        1. Temporary Table -> This is just a copy of the router's table. It's value is 'none' before a 2PC. 
+        2. Phase1SeqNum -> This stores the seqNum of the first phase of 2PC. Its value is 'none' before getting a control message.
+        3. Phase2SeqNum -> This stores the seqNum of the second phase of 2PC. Its value is 'none' before the second phase of 2PC.
+        4. TotalReceived -> This stores the number of 2PC related messages received from an incoming edge. The purpose of keeping this 
+            variable is to make sure a router process doesn't leave 2PC before getting 2PC related messages from all neighbours and responding to those
+            requests.
+    2PC related messages used by the routers:
+        1. {canCommit, From, SeqNum} -> This is a response to the control request if the router can commit.
+        2. {abort, From, SeqNum} -> This message is used by routers as a response to the control request if it cannot commit.
+            When a router receives this message, it stops propagating messages to neighbours and send it back straight away to it's parent.
+        3. {doCommit, From, SeqNum} -> This message is used during the second phase of the 2PC.
+        4. {rollBack, From, SeqNum} -> When a router receives this message, it discards the temporary copy of the table.
+        5. {committed, From, SeqNum} -> This message is used as a response to doCommit.
+        6. {aborted, From, SeqNum} -> This message is used as a response to rollBack.
+    
+    The 2PC is initiated by a root router which gets a control request from the controller or any other process.
+    
+    The success case:
+    
+    -----------------------First phase (voting phase) -----------------------------------------
+    The root router process first checks the sequence number(seqNum) of the control request. 
+    If the value of Phase1SeqNum stored by the router process is not "none" then this indicates that the router is not engaged in 2PC. 
+    So, it creates a temporary table and uses that as an argument to call control function. If control fun doesn't return abort, it 
+    propagatges the control request to it's immediate neighbours and starts receiving acknowledgements. The children do the same thing. 
+    Eventually, every router in the network receives control message and finally, the root router collects "canCommit" from all its neighbours.
+
+    -----------------------Second phase---------------------------------------------------------
+    During the second phase, the root router starts propagating doCommit to it's immediate neighbours and again starts listening for acknowledgememts.
+    Every other router will be listening for a doCommit with the temporary table. Once, a router receives a doCommit, it propagates that message to 
+    all of its neighbours and start listening for acknowledgements like the root router. Eventually, all routers will receive a doCommit and will make
+    their table permanent and acknowledge back to the parent router. Ultimately, the root router will receive committed message and make its table 
+    permanent and returns committed to the controller. 
+
+    
+    The abort case:
+    In case of an abort, a router stops propagating control request, instead it sends abort to its parent straight away. In such a case,
+    some routers may not be aware of a control request for 2PC. During the second phase, there might be 2 different cases :
+
+    The router has been involved in the first phase ->
+        A router knows if it was involved in the first phase if Phase1SeqNum is an integer.
+        When a router receives, a rollBack, it is propagated to all the neighbours and the router listens for incoming acknowledgements. 
+        Eventually, all routers will get a rollBack request. They will reply with an aborted. Once, the root router receives aborted from all its
+        neighbours, it will send abort to the controller and the 2PC is complete. 
+
+    The router has not been involved in the second phase ->
+        A router knows if it was involved in the first phase if Phase1SeqNum is "none".
+        If such router receives a rollBack request, it does nothing with the table but simply propagates the request to complete 2PC.
+
+Implementation of graphtoNetwork
+    The controller first starts all the router processes looking at the graph and stores the Node name and corresponding Pid in an ets table.
+    Secondly, it sends control request with SeqNum 0 to initialise the router with a routing table using control function.
+
+Implementation of extendNetwork
+
+    Firstly, the controller sends a control request to the root router.
+    Eventually all the nodes and the one specified by "From" in extendNetwork get the control requests. 
+    The extending process(From) calls control function which behaves a bit differently to other control functions. 
+    ControlFun starts the new Node process and initialises it by sending a control request with seqNum 0. 
+    The $NoInEdges for the new Node is assigned 1 because it only has a single incoming edge from the router specified by From.
+    For all other processes, ControlFun re-adjusts $NoInEdges and also updates the temporary table appropriately. 
+
+Conflicting Requests ->
+
+    If a router receives a different seqNum when it is invloved in a 2PC, it immediately sends an abort to the caller. 
+
+Fault Cases ->
+
+    It is assumed that functions that are responsible for manipulating the router table do not fail as they are provided by the programming language. 
+    If a router that is in the 1st phase does not receive a 2PC related message in 5 seconds, it aborts which avoids chances of deadlocks and livelocks.
+
+
+
